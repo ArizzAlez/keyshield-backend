@@ -8,8 +8,9 @@ services:
     envVars:
       - key: SECRET_KEY
         generateValue: true
+      # ADD THESE 4 LINES:
       - key: DB_HOST
-        value: localhost
+        value: v1529.securen.net
       - key: DB_USER
         value: keyshiel_ajiz
       - key: DB_PASSWORD
