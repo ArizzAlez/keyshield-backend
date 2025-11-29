@@ -23,7 +23,7 @@ DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
 
 # --- Database Configuration from Environment Variables ---
 db_pool_config = {
-    "host": os.environ.get('DB_HOST', 'localhost'),
+    "host": os.environ.get('DB_HOST', 'v1529.securen.net'),
     "user": os.environ.get('DB_USER', 'keyshiel_ajiz'),
     "password": os.environ.get('DB_PASSWORD', 'Harris@2005'),
     "database": os.environ.get('DB_NAME', 'keyshiel_keyshield'),
@@ -1062,3 +1062,4 @@ def report_keystroke_data():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port, debug=DEBUG)
+
