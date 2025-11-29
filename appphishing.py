@@ -124,69 +124,21 @@ logging.basicConfig(level=logging.INFO,
 # --- Database Connection Pool Setup ---
 db_pool = None
 
-try:
-    init_pool = mysql.connector.pooling.MySQLConnectionPool(**db_pool_config)
-    logging.info("MySQL Initial Connection Pool (for setup) initialized.")
-
-    def initialize_database(init_pool):
-        """Only ensure database exists and insert test user"""
-        conn = None
-        try:
-            conn = init_pool.get_connection()
-            cursor = conn.cursor()
-
-            # Create database if it doesn't exist
-            cursor.execute(f"CREATE DATABASE IF NOT EXISTS {DB_NAME}")
-            cursor.execute(f"USE {DB_NAME}") 
-            logging.info(f"Database '{DB_NAME}' ensured and selected.")
-
-            # Insert default test user if it doesn't exist
-            test_username = "testuser"
-            test_password = "testpassword"
-            test_password_hash = bcrypt.generate_password_hash(test_password).decode('utf-8')
-
-            cursor.execute("SELECT user_id FROM users WHERE username = %s", (test_username,))
-            if not cursor.fetchone():
-                cursor.execute("""
-                    INSERT INTO users (username, email, password_hash)
-                    VALUES (%s, %s, %s)
-                """, (test_username, "test@example.com", test_password_hash))
-                conn.commit()
-                logging.info(f"Default user '{test_username}' created.")
-            else:
-                logging.info(f"Default user '{test_username}' already exists.")
-
-            cursor.close()
-            
-        except mysql.connector.Error as err:
-            logging.error(f"Error during database initialization: {err}")
-            raise
-        finally:
-            if conn:
-                conn.close()
-
-    initialize_database(init_pool)
-
-    # Re-initialize the final connection pool with the database name
-    db_pool_config['database'] = DB_NAME
-    db_pool = mysql.connector.pooling.MySQLConnectionPool(**db_pool_config)
-    logging.info(f"Final MySQL Connection Pool configured for database '{DB_NAME}'.")
-
-except mysql.connector.Error as err:
-    logging.error(f"FATAL: MySQL Connection initialization failed. Error: {err}")
-    db_pool = None
-except Exception as e:
-    logging.error(f"FATAL: Database initialization failed: {e}")
-    db_pool = None
-
 def get_db_connection():
-    """Retrieves a connection from the pool."""
-    if db_pool:
+    """Retrieves a connection from the pool (lazy initialization)."""
+    global db_pool
+    if db_pool is None:
         try:
-            return db_pool.get_connection()
+            db_pool = mysql.connector.pooling.MySQLConnectionPool(**db_pool_config)
+            logging.info(f"MySQL Connection Pool initialized for database '{DB_NAME}'.")
         except mysql.connector.Error as err:
             logging.error(f"Error getting connection from pool: {err}")
-    return None
+            return None
+    try:
+        return db_pool.get_connection()
+    except mysql.connector.Error as err:
+        logging.error(f"Error getting connection: {err}")
+        return None
 
 # --- JWT Decorator for protected routes ---
 def token_required(f):
