@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>KeyShield — Phishing Analyzer (Demo)</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding:20px; max-width:900px; margin:auto; }
+    textarea, input[type=text] { width:100%; padding:8px; margin:6px 0; }
+    .safe { color: green; font-weight:bold; }
+    .suspicious { color: red; font-weight:bold; }
+    .card { border:1px solid #ddd; padding:12px; border-radius:6px; margin-top:12px; }
+  </style>
+</head>
+<body>
+  <h2>KeyShield — Phishing Analyzer (Demo)</h2>
+  <p>Paste a URL or an email body/subject to check. This is a <strong>defensive demo</strong>.</p>
+
+  <label><input type="radio" name="type" value="url" checked> URL</label>
+  <label><input type="radio" name="type" value="email"> Email body/subject</label>
+
+  <textarea id="input" rows="4" placeholder="Paste URL or email text here..."></textarea>
+  <button id="check">Analyze</button>
+  <a href="/report" style="margin-left:12px">Report suspected phishing</a>
+  <a href="/admin/reports" style="margin-left:12px">Admin: View reports/checks</a>
+
+  <div id="result" class="card" style="display:none;"></div>
+
+  <script>
+    document.getElementById('check').addEventListener('click', function(){
+      const type = document.querySelector('input[name=type]:checked').value;
+      const input = document.getElementById('input').value.trim();
+      if (!input) { alert('Paste something first'); return; }
+
+      const data = new URLSearchParams();
+      data.append('type', type);
+      data.append('input', input);
+
+      fetch('/analyze', {
+        method: 'POST',
+        body: data
+      }).then(r => r.json()).then(data => {
+        const box = document.getElementById('result');
+        box.style.display = 'block';
+        box.innerHTML = '<strong>Verdict:</strong> ' +
+          (data.verdict === 'safe' ? '<span class="safe">SAFE</span>' : '<span class="suspicious">SUSPICIOUS</span>') +
+          '<br><strong>Reasons:</strong> ' + (data.reasons || 'None') +
+          '<br><strong>Input:</strong> <code>' + data.input + '</code>';
+      }).catch(e => alert('Error: ' + e));
+    });
+  </script>
+</body>
+</html>

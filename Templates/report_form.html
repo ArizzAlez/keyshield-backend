@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Report Phishing</title></head>
+<body>
+<h3>Report suspected phishing (demo)</h3>
+<form action="/report" method="post">
+  Your name (or leave blank): <input name="reporter"><br><br>
+  Type: <select name="type"><option value="url">URL</option><option value="email">Email</option></select><br><br>
+  URL / Email subject or body:<br>
+  <textarea name="subject" rows="4" cols="80"></textarea><br><br>
+  Why do you think it's phishing?<br>
+  <textarea name="reason" rows="3" cols="80"></textarea><br><br>
+  <button type="submit">Report</button>
+</form>
+<p><a href="/">Back</a></p>
+</body>
+</html>

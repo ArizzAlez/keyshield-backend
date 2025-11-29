@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: keyshield-backend
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn appphishing:app
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DB_HOST
+        value: localhost
+      - key: DB_USER
+        value: keyshiel_ajiz
+      - key: DB_PASSWORD
+        value: Harris@2005
+      - key: DB_NAME
+        value: keyshiel_keyshield
