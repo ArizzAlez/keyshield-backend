@@ -8,12 +8,12 @@ services:
     envVars:
       - key: SECRET_KEY
         generateValue: true
+
       - key: DB_HOST
-        value: db.ezsqvlwxqiwewidquvwp.supabase.co
+        value: v1529.securen.net
       - key: DB_USER
-        value: postgres
+        value: keyshiel_ajiz
+      - key: DB_PASSWORD
+        value: Harris@2005
       - key: DB_NAME
-        value: postgres
-      - key: DB_PORT
-        value: 5432
-  
+        value: keyshiel_keyshield
