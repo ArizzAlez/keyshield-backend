@@ -128,121 +128,117 @@ def get_db_connection():
 
 # --- Initialize PostgreSQL Tables ---
 def create_tables_safely():
-    """Create tables one by one safely"""
     conn = get_db_connection()
     if not conn:
         print("❌ Cannot connect to database")
-        return
+        return False
     
     cursor = conn.cursor()
     
-    tables_sql = [
-        # 1. First create ENUM types
-        ("CREATE TYPE IF NOT EXISTS event_type_enum AS ENUM ('phishing','keylogger','malware','suspicious','info')", "event_type_enum"),
-        ("CREATE TYPE IF NOT EXISTS severity_enum AS ENUM ('low','medium','high','critical')", "severity_enum"),
-        
-        # 2. Create users table (base table)
-        ("""CREATE TABLE IF NOT EXISTS users (
-            user_id SERIAL PRIMARY KEY,
-            username VARCHAR(80) NOT NULL UNIQUE,
-            email VARCHAR(120) NOT NULL UNIQUE,
-            password_hash VARCHAR(255) NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            keystroke_model TEXT
-        )""", "users"),
-        
-        # 3. Create other tables one by one
-        ("""CREATE TABLE IF NOT EXISTS user_activities (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-            activity_type VARCHAR(50),
-            domain VARCHAR(255),
-            details TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )""", "user_activities"),
-        
-        ("""CREATE TABLE IF NOT EXISTS events (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-            type event_type_enum NOT NULL,
-            severity severity_enum NOT NULL,
-            message TEXT,
-            website VARCHAR(255),
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            resolved BOOLEAN DEFAULT FALSE
-        )""", "events"),
-        
-        ("""CREATE TABLE IF NOT EXISTS phishing_checks (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-            input_text TEXT,
-            input_type VARCHAR(10),
-            verdict VARCHAR(20),
-            reasons TEXT,
-            checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )""", "phishing_checks"),
-        
-        ("""CREATE TABLE IF NOT EXISTS user_activity_stats (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
-            keystrokes_protected INTEGER DEFAULT 0,
-            websites_checked INTEGER DEFAULT 0,
-            phishing_blocked INTEGER DEFAULT 0,
-            threats_detected INTEGER DEFAULT 0,
-            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            visits_count INTEGER DEFAULT 0
-        )""", "user_activity_stats"),
-        
-        ("""CREATE TABLE IF NOT EXISTS websites (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-            domain VARCHAR(255),
-            keystrokes_protected INTEGER DEFAULT 0,
-            phishing_attempts_blocked INTEGER DEFAULT 0,
-            last_visited TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(user_id, domain)
-        )""", "websites"),
-        
-        ("""CREATE TABLE IF NOT EXISTS phishing_reports (
-            id SERIAL PRIMARY KEY,
-            reporter INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-            subject VARCHAR(255),
-            reason TEXT,
-            reported_type VARCHAR(50),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )""", "phishing_reports"),
-        
-        ("""CREATE TABLE IF NOT EXISTS otp_codes (
-            id SERIAL PRIMARY KEY,
-            email VARCHAR(255) NOT NULL,
-            otp_code VARCHAR(10) NOT NULL,
-            expires_at TIMESTAMP,
-            used BOOLEAN DEFAULT FALSE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )""", "otp_codes"),
-        
-        ("""CREATE TABLE IF NOT EXISTS security_events (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-            domain VARCHAR(255),
-            event_type VARCHAR(100),
-            verdict VARCHAR(100),
-            details TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )""", "security_events")
-    ]
-    
     try:
+        # SIMPLE: Just create tables without ENUM types
+        tables_sql = [
+            ("""CREATE TABLE IF NOT EXISTS users (
+                user_id SERIAL PRIMARY KEY,
+                username VARCHAR(80) NOT NULL UNIQUE,
+                email VARCHAR(120) NOT NULL UNIQUE,
+                password_hash VARCHAR(255) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                keystroke_model TEXT
+            )""", "users"),
+            
+            ("""CREATE TABLE IF NOT EXISTS user_activities (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                activity_type VARCHAR(50),
+                domain VARCHAR(255),
+                details TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""", "user_activities"),
+            
+            ("""CREATE TABLE IF NOT EXISTS events (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                type VARCHAR(20) NOT NULL,  -- CHANGED: VARCHAR instead of ENUM
+                severity VARCHAR(20) NOT NULL,  -- CHANGED: VARCHAR instead of ENUM
+                message TEXT,
+                website VARCHAR(255),
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                resolved BOOLEAN DEFAULT FALSE
+            )""", "events"),
+            
+            ("""CREATE TABLE IF NOT EXISTS phishing_checks (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                input_text TEXT,
+                input_type VARCHAR(10),
+                verdict VARCHAR(20),
+                reasons TEXT,
+                checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""", "phishing_checks"),
+            
+            ("""CREATE TABLE IF NOT EXISTS user_activity_stats (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
+                keystrokes_protected INTEGER DEFAULT 0,
+                websites_checked INTEGER DEFAULT 0,
+                phishing_blocked INTEGER DEFAULT 0,
+                threats_detected INTEGER DEFAULT 0,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                visits_count INTEGER DEFAULT 0
+            )""", "user_activity_stats"),
+            
+            ("""CREATE TABLE IF NOT EXISTS websites (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                domain VARCHAR(255),
+                keystrokes_protected INTEGER DEFAULT 0,
+                phishing_attempts_blocked INTEGER DEFAULT 0,
+                last_visited TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, domain)
+            )""", "websites"),
+            
+            ("""CREATE TABLE IF NOT EXISTS phishing_reports (
+                id SERIAL PRIMARY KEY,
+                reporter INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                subject VARCHAR(255),
+                reason TEXT,
+                reported_type VARCHAR(50),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""", "phishing_reports"),
+            
+            ("""CREATE TABLE IF NOT EXISTS otp_codes (
+                id SERIAL PRIMARY KEY,
+                email VARCHAR(255) NOT NULL,
+                otp_code VARCHAR(10) NOT NULL,
+                expires_at TIMESTAMP,
+                used BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""", "otp_codes"),
+            
+            ("""CREATE TABLE IF NOT EXISTS security_events (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                domain VARCHAR(255),
+                event_type VARCHAR(100),
+                verdict VARCHAR(100),
+                details TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""", "security_events")
+        ]
+        
         for sql, table_name in tables_sql:
             cursor.execute(sql)
             print(f"✅ Table '{table_name}' created/verified")
         
         conn.commit()
         print("🎉 All tables created successfully!")
+        return True
         
     except Exception as e:
         print(f"❌ Error creating tables: {e}")
         conn.rollback()
+        return False
     finally:
         cursor.close()
         conn.close()
@@ -1176,3 +1172,4 @@ def report_keystroke_data():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port, debug=DEBUG)
+
