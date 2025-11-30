@@ -9,9 +9,8 @@ services:
       - key: SECRET_KEY
         generateValue: true
       - key: SUPABASE_PASSWORD
-        value: Harris@2005  
+        value: Harris@2005
       - key: DOMAIN
         value: https://keyshield.my
       - key: DEBUG
         value: false
-
