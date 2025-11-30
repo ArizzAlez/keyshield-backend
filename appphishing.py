@@ -5,7 +5,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_bcrypt import Bcrypt
 import jwt
-import psycopg
+import psycopg2
 
 # Setup
 logging.basicConfig(level=logging.INFO)
@@ -27,7 +27,7 @@ def get_db_connection():
     try:
         database_url = os.environ.get('DATABASE_URL')
         if database_url:
-            conn = psycopg.connect(database_url)
+            conn = psycopg2.connect(database_url)
             logging.info("✅ PostgreSQL connected successfully!")
             return conn
         logging.error("❌ DATABASE_URL not found")
@@ -208,3 +208,4 @@ def home():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port, debug=False)
+
