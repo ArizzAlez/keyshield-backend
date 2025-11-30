@@ -112,13 +112,16 @@ app.config['SECRET_KEY'] = SECRET_KEY
 
 # --- CORS Configuration for Production ---
 CORS(app, origins=[
-    "https://your-frontend-domain.com",  # Replace with your yeahhost domain
-    "https://www.your-frontend-domain.com",
-    "chrome-extension://*",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "https://keyshield-backend.onrender.com"
+    "https://keyshield.my",                    # Your frontend domain
+    "https://www.keyshield.my",               # Your www domain
+    "https://keyshield-backend.onrender.com", # Your backend domain
+    "chrome-extension://*",                   # Chrome extension
+    "http://localhost:3000",                  # Local development
+    "http://127.0.0.1:3000",                  # Local development
+    "http://localhost:5173",                  # Vite dev server
+    "http://127.0.0.1:5173"                   # Vite dev server
 ])
+
 
 bcrypt = Bcrypt(app)
 
@@ -1095,3 +1098,4 @@ def report_keystroke_data():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port, debug=DEBUG)
+
