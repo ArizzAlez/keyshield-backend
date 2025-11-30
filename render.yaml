@@ -8,7 +8,6 @@ services:
     envVars:
       - key: SECRET_KEY
         generateValue: true
-
       - key: DB_HOST
         value: v1529.securen.net
       - key: DB_USER
