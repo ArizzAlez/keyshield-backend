@@ -7,20 +7,34 @@ from flask import Flask, request, jsonify, render_template, make_response
 from flask_bcrypt import Bcrypt
 from flask_cors import CORS
 import jwt
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import mysql.connector.pooling
 from functools import wraps
 import random 
 from urllib.parse import urlparse
-from dotenv import load_dotenv
+from dotenv import load_dotenv  # ADD THIS LINE
 
 # Load environment variables from .env file
 load_dotenv()
 
 # --- Configuration from Environment Variables ---
 SECRET_KEY = os.environ.get('SECRET_KEY', 'fallback-secret-key-change-in-production')
-DOMAIN = os.environ.get('DOMAIN', 'https://keyshield.my')
+DOMAIN = os.environ.get('DOMAIN', 'https://keyshield-backend.onrender.com')
 DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
+
+# --- Database Configuration from Environment Variables ---
+db_pool_config = {
+    "host": os.environ.get('DB_HOST', 'v1529.securen.net'),
+    "user": os.environ.get('DB_USER', 'keyshiel_ajiz'),
+    "password": os.environ.get('DB_PASSWORD', 'Harris@2005'),
+    "database": os.environ.get('DB_NAME', 'keyshiel_keyshield'),
+    "pool_name": "mypool",
+    "pool_size": 5,
+    "port": 3306,  # Explicit MySQL port
+    "connect_timeout": 30,  # Add timeout for production
+    "use_pure": True  # Use pure Python implementation
+}
+
+DB_NAME = os.environ.get('DB_NAME', 'keyshiel_keyshield')
 
 # --- Phishing Detection Configuration ---
 TRUSTED_DOMAINS = [
@@ -98,9 +112,12 @@ app.config['SECRET_KEY'] = SECRET_KEY
 
 # --- CORS Configuration for Production ---
 CORS(app, origins=[
-    DOMAIN,
-    "https://www.keyshield.my",
-    "chrome-extension://*"  # Allow all Chrome extensions temporarily
+    "https://your-frontend-domain.com",  # Replace with your yeahhost domain
+    "https://www.your-frontend-domain.com",
+    "chrome-extension://*",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://keyshield-backend.onrender.com"
 ])
 
 bcrypt = Bcrypt(app)
@@ -110,20 +127,23 @@ logging.basicConfig(level=logging.INFO,
                     format='[%(asctime)s] %(levelname)s in %(filename)s: %(message)s',
                     datefmt='%Y-%m-%d %H:%M:%S')
 
-# --- Database Configuration for Supabase ---
+# --- Database Connection Pool Setup ---
+db_pool = None
+
 def get_db_connection():
-    """Get a database connection using psycopg2"""
+    """Retrieves a connection from the pool (lazy initialization)."""
+    global db_pool
+    if db_pool is None:
+        try:
+            db_pool = mysql.connector.pooling.MySQLConnectionPool(**db_pool_config)
+            logging.info(f"MySQL Connection Pool initialized for database '{DB_NAME}'.")
+        except mysql.connector.Error as err:
+            logging.error(f"Error getting connection from pool: {err}")
+            return None
     try:
-        conn = psycopg2.connect(
-            host='db.ezsqvlwxqiwewidquvwp.supabase.co',
-            database='postgres',
-            user='postgres',
-            password=os.environ.get('DB_PASSWORD'),
-            port=5432
-        )
-        return conn
-    except Exception as err:
-        logging.error(f"Database connection error: {err}")
+        return db_pool.get_connection()
+    except mysql.connector.Error as err:
+        logging.error(f"Error getting connection: {err}")
         return None
 
 # --- JWT Decorator for protected routes ---
@@ -152,6 +172,33 @@ def token_required(f):
         return f(*args, **kwargs)
     return decorated
 
+# --- Health Check Endpoint (Required for Render) ---
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint for Render"""
+    try:
+        # Test database connection
+        conn = get_db_connection()
+        if conn:
+            conn.close()
+            return jsonify({
+                'status': 'healthy', 
+                'database': 'connected',
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            }), 200
+        else:
+            return jsonify({
+                'status': 'unhealthy',
+                'database': 'disconnected',
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            }), 503
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'error': str(e),
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        }), 500
+
 # --- Route for REGISTRATION ---
 @app.route('/api/register', methods=['POST'])
 def register():
@@ -167,11 +214,11 @@ def register():
     if not conn:
         return jsonify({'message': 'Database connection error'}), 503
 
-    cursor = None
+    cursor = conn.cursor()
     try:
-        cursor = conn.cursor()
         # Check if user already exists
-        cursor.execute("SELECT user_id FROM users WHERE username = %s OR email = %s", (username, email))
+        cursor.execute("SELECT user_id FROM users WHERE username = %s OR email = %s", 
+                      (username, email))
         if cursor.fetchone():
             return jsonify({'message': 'Username or email already exists'}), 400
 
@@ -185,13 +232,12 @@ def register():
         
         return jsonify({'success': True, 'message': 'Registration successful'}), 201
         
-    except psycopg2.Error as err:
-        logging.error(f"PostgreSQL Error during registration: {err}")
+    except mysql.connector.Error as err:
+        logging.error(f"MySQL Error during registration: {err}")
         return jsonify({'message': 'Registration failed'}), 500
     finally:
-        if cursor:
+        if conn and conn.is_connected():
             cursor.close()
-        if conn:
             conn.close()
 
 # --- Route for LOGIN ---
@@ -215,9 +261,8 @@ def api_login():
     if not conn:
         return jsonify({'message': 'Database connection error'}), 503
 
-    cursor = None
+    cursor = conn.cursor(dictionary=True)
     try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
         # Find user by username OR email
         if username:
             cursor.execute("SELECT user_id, username, password_hash, keystroke_model FROM users WHERE username = %s", (username,))
@@ -283,13 +328,12 @@ def api_login():
             'requires_enrollment': requires_enrollment
         }), 200
 
-    except psycopg2.Error as err:
-        logging.error(f"PostgreSQL Error during login: {err}")
+    except mysql.connector.Error as err:
+        logging.error(f"MySQL Error during login: {err}")
         return jsonify({'message': 'Server error'}), 500
     finally:
-        if cursor:
+        if conn and conn.is_connected():
             cursor.close()
-        if conn:
             conn.close()
 
 # --- ENROLLMENT ENDPOINT ---
@@ -314,9 +358,8 @@ def enroll_keystroke():
     if not conn:
         return jsonify({'message': 'Database connection error'}), 503
 
-    cursor = None
+    cursor = conn.cursor(dictionary=True)
     try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("SELECT password_hash FROM users WHERE user_id = %s", (user_id,))
         user = cursor.fetchone()
         
@@ -343,13 +386,12 @@ def enroll_keystroke():
         
         return jsonify({'success': True, 'message': 'Keystroke protection enabled'}), 200
         
-    except psycopg2.Error as err:
-        logging.error(f"PostgreSQL Error during keystroke enrollment: {err}")
+    except mysql.connector.Error as err:
+        logging.error(f"MySQL Error during keystroke enrollment: {err}")
         return jsonify({'message': 'Enrollment failed'}), 500
     finally:
-        if cursor:
+        if conn and conn.is_connected():
             cursor.close()
-        if conn:
             conn.close()
 
 # --- DASHBOARD ENDPOINTS ---
@@ -364,9 +406,8 @@ def get_user_stats():
     if not conn:
         return jsonify({'message': 'Database connection error'}), 503
 
-    cursor = None
+    cursor = conn.cursor(dictionary=True, buffered=True)
     try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
         # REAL DATA: Total keystrokes protected from user_activities
         cursor.execute("""
             SELECT COUNT(*) as total_keystrokes 
@@ -433,12 +474,11 @@ def get_user_stats():
         cursor.execute("""
             INSERT INTO user_activity_stats (user_id, keystrokes_protected, websites_checked, phishing_blocked, threats_detected)
             VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (user_id) DO UPDATE SET 
-                keystrokes_protected = EXCLUDED.keystrokes_protected,
-                websites_checked = EXCLUDED.websites_checked,
-                phishing_blocked = EXCLUDED.phishing_blocked,
-                threats_detected = EXCLUDED.threats_detected,
-                last_updated = CURRENT_TIMESTAMP
+            ON DUPLICATE KEY UPDATE 
+                keystrokes_protected = VALUES(keystrokes_protected),
+                websites_checked = VALUES(websites_checked),
+                phishing_blocked = VALUES(phishing_blocked),
+                threats_detected = VALUES(threats_detected)
         """, (user_id, total_keystrokes, total_safe_sessions, total_phishing_blocked, threats_detected))
         
         conn.commit()
@@ -460,13 +500,12 @@ def get_user_stats():
         
         return jsonify({'stats': dashboard_stats}), 200
         
-    except psycopg2.Error as err:
-        logging.error(f"PostgreSQL Error fetching user stats: {err}")
+    except mysql.connector.Error as err:
+        logging.error(f"MySQL Error fetching user stats: {err}")
         return jsonify({'message': 'Failed to fetch stats'}), 500
     finally:
-        if cursor:
+        if conn and conn.is_connected():
             cursor.close()
-        if conn:
             conn.close()
 
 @app.route('/api/websites', methods=['GET'])
@@ -480,9 +519,8 @@ def get_user_websites():
     if not conn:
         return jsonify({'message': 'Database connection error'}), 503
 
-    cursor = None
+    cursor = conn.cursor(dictionary=True)
     try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
         # Get websites data from websites table
         cursor.execute("""
             SELECT 
@@ -527,13 +565,12 @@ def get_user_websites():
         
         return jsonify({'websites': formatted_websites}), 200
         
-    except psycopg2.Error as err:
-        logging.error(f"PostgreSQL Error fetching user websites: {err}")
+    except mysql.connector.Error as err:
+        logging.error(f"MySQL Error fetching user websites: {err}")
         return jsonify({'message': 'Failed to fetch websites'}), 500
     finally:
-        if cursor:
+        if conn and conn.is_connected():
             cursor.close()
-        if conn:
             conn.close()
 
 @app.route('/api/events', methods=['GET'])
@@ -547,9 +584,8 @@ def get_user_events():
     if not conn:
         return jsonify({'message': 'Database connection error'}), 503
 
-    cursor = None
+    cursor = conn.cursor(dictionary=True)
     try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
         # Get both phishing reports and security events
         cursor.execute("""
             (SELECT 
@@ -581,13 +617,12 @@ def get_user_events():
         
         return jsonify({'events': formatted_events}), 200
         
-    except psycopg2.Error as err:
-        logging.error(f"PostgreSQL Error fetching user events: {err}")
+    except mysql.connector.Error as err:
+        logging.error(f"MySQL Error fetching user events: {err}")
         return jsonify({'message': 'Failed to fetch events'}), 500
     finally:
-        if cursor:
+        if conn and conn.is_connected():
             cursor.close()
-        if conn:
             conn.close()
 
 @app.route('/api/dashboard-events', methods=['GET'])
@@ -600,9 +635,8 @@ def get_dashboard_events():
     if not conn:
         return jsonify({'message': 'Database connection error'}), 503
 
-    cursor = None
+    cursor = conn.cursor(dictionary=True)
     try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
         # Get recent activities
         cursor.execute("""
             SELECT activity_type, domain, details, created_at
@@ -652,13 +686,12 @@ def get_dashboard_events():
         
         return jsonify({'events': formatted_events}), 200
         
-    except psycopg2.Error as err:
-        logging.error(f"PostgreSQL Error fetching dashboard events: {err}")
+    except mysql.connector.Error as err:
+        logging.error(f"MySQL Error fetching dashboard events: {err}")
         return jsonify({'message': 'Failed to fetch events'}), 500
     finally:
-        if cursor:
+        if conn and conn.is_connected():
             cursor.close()
-        if conn:
             conn.close()
 
 # --- TRACKING ENDPOINTS FOR EXTENSION INTEGRATION ---
@@ -679,9 +712,8 @@ def track_website_visit():
     if not conn:
         return jsonify({'message': 'Database connection error'}), 503
 
-    cursor = None
+    cursor = conn.cursor()
     try:
-        cursor = conn.cursor()
         domain = urlparse(url).netloc
         
         # Track as website visit activity
@@ -694,8 +726,8 @@ def track_website_visit():
         cursor.execute("""
             INSERT INTO websites (user_id, domain, last_visited)
             VALUES (%s, %s, %s)
-            ON CONFLICT (user_id, domain) DO UPDATE SET 
-                last_visited = EXCLUDED.last_visited
+            ON DUPLICATE KEY UPDATE 
+            last_visited = VALUES(last_visited)
         """, (user_id, domain, datetime.now()))
         
         conn.commit()
@@ -706,9 +738,8 @@ def track_website_visit():
         logging.error(f"Error tracking website visit: {e}")
         return jsonify({'message': 'Tracking failed'}), 500
     finally:
-        if cursor:
+        if conn.is_connected():
             cursor.close()
-        if conn:
             conn.close()
 
 @app.route('/api/track_security_event', methods=['POST'])
@@ -729,9 +760,8 @@ def track_security_event():
     if not conn:
         return jsonify({'message': 'Database connection error'}), 503
 
-    cursor = None
+    cursor = conn.cursor()
     try:
-        cursor = conn.cursor()
         domain = urlparse(url).netloc
         
         # Track the security event
@@ -745,9 +775,9 @@ def track_security_event():
             cursor.execute("""
                 INSERT INTO websites (user_id, domain, phishing_attempts_blocked, last_visited)
                 VALUES (%s, %s, 1, %s)
-                ON CONFLICT (user_id, domain) DO UPDATE SET 
-                phishing_attempts_blocked = COALESCE(websites.phishing_attempts_blocked, 0) + 1,
-                last_visited = EXCLUDED.last_visited
+                ON DUPLICATE KEY UPDATE 
+                phishing_attempts_blocked = COALESCE(phishing_attempts_blocked, 0) + 1,
+                last_visited = VALUES(last_visited)
             """, (user_id, domain, datetime.now()))
             
             print(f"🚨 Tracked suspicious event for {domain} - verdict: {verdict}")
@@ -760,9 +790,8 @@ def track_security_event():
         logging.error(f"Error tracking security event: {e}")
         return jsonify({'message': 'Event tracking failed'}), 500
     finally:
-        if cursor:
+        if conn and conn.is_connected():
             cursor.close()
-        if conn:
             conn.close()
             
 @app.route('/api/track-keystrokes', methods=['POST', 'OPTIONS'])
@@ -803,7 +832,7 @@ def track_keystrokes():
             return jsonify({"success": False, "message": "Invalid data"}), 400
 
         conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor = conn.cursor(dictionary=True)
 
         # 1. Track as user activity
         cursor.execute("""
@@ -818,18 +847,17 @@ def track_keystrokes():
         cursor.execute("""
             INSERT INTO user_activity_stats (user_id, keystrokes_protected, websites_checked, phishing_blocked, threats_detected)
             VALUES (%s, %s, 0, 0, 0)
-            ON CONFLICT (user_id) DO UPDATE SET 
-                keystrokes_protected = user_activity_stats.keystrokes_protected + %s,
-                last_updated = CURRENT_TIMESTAMP
+            ON DUPLICATE KEY UPDATE 
+                keystrokes_protected = keystrokes_protected + %s
         """, (user_id, count, count))
         
         # 3. Update websites table with keystrokes protected - INCREMENT the count
         cursor.execute("""
             INSERT INTO websites (user_id, domain, keystrokes_protected, last_visited)
             VALUES (%s, %s, %s, %s)
-            ON CONFLICT (user_id, domain) DO UPDATE SET 
-                keystrokes_protected = COALESCE(websites.keystrokes_protected, 0) + %s,
-                last_visited = EXCLUDED.last_visited
+            ON DUPLICATE KEY UPDATE 
+                keystrokes_protected = keystrokes_protected + %s,
+                last_visited = VALUES(last_visited)
         """, (user_id, domain, count, datetime.now(), count))
         
         conn.commit()
@@ -866,9 +894,8 @@ def track_user_activity():
     if not conn:
         return jsonify({'message': 'Database connection error'}), 503
 
-    cursor = None
+    cursor = conn.cursor()
     try:
-        cursor = conn.cursor()
         # Insert activity
         cursor.execute("""
             INSERT INTO user_activities (user_id, activity_type, domain, details)
@@ -880,25 +907,24 @@ def track_user_activity():
             cursor.execute("""
                 INSERT INTO user_activity_stats (user_id, websites_checked) 
                 VALUES (%s, 1)
-                ON CONFLICT (user_id) DO UPDATE SET websites_checked = user_activity_stats.websites_checked + 1
+                ON DUPLICATE KEY UPDATE websites_checked = websites_checked + 1
             """, (user_id,))
         elif activity_type == 'website_reported':
             cursor.execute("""
                 INSERT INTO user_activity_stats (user_id, phishing_blocked) 
                 VALUES (%s, 1)
-                ON CONFLICT (user_id) DO UPDATE SET phishing_blocked = user_activity_stats.phishing_blocked + 1
+                ON DUPLICATE KEY UPDATE phishing_blocked = phishing_blocked + 1
             """, (user_id,))
             
         conn.commit()
         return jsonify({'success': True}), 200
         
-    except psycopg2.Error as err:
-        logging.error(f"PostgreSQL Error tracking activity: {err}")
+    except mysql.connector.Error as err:
+        logging.error(f"MySQL Error tracking activity: {err}")
         return jsonify({'message': 'Failed to track activity'}), 500
     finally:
-        if cursor:
+        if conn and conn.is_connected():
             cursor.close()
-        if conn:
             conn.close()
 
 # --- PHISHING ANALYSIS ENDPOINTS ---
@@ -937,9 +963,8 @@ def analyze_url_api():
     # Track the analysis in database
     conn = get_db_connection()
     if conn:
-        cursor = None
+        cursor = conn.cursor()
         try:
-            cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO phishing_checks (user_id, input_text, input_type, verdict, reasons, checked_at) 
                 VALUES (%s, %s, %s, %s, %s, %s)
@@ -954,12 +979,11 @@ def analyze_url_api():
                   json.dumps({'verdict': verdict, 'reasons': reasons})))
             conn.commit()
             
-        except psycopg2.Error as err:
+        except mysql.connector.Error as err:
             logging.error(f"Error saving phishing check: {err}")
         finally:
-            if cursor:
+            if conn.is_connected():
                 cursor.close()
-            if conn:
                 conn.close()
 
     return jsonify({
@@ -976,21 +1000,19 @@ def analyze():
 
     conn = get_db_connection()
     if conn:
-        cursor = None
+        cursor = conn.cursor()
         try:
-            cursor = conn.cursor()
             # For non-authenticated checks, use user_id 1 (test user)
             cursor.execute("""
                 INSERT INTO phishing_checks (user_id, input_text, input_type, verdict, reasons, checked_at) 
                 VALUES (%s, %s, %s, %s, %s, %s)
             """, (1, raw, "url", verdict, reasons, datetime.utcnow().isoformat()))
             conn.commit()
-        except psycopg2.Error as err:
+        except mysql.connector.Error as err:
             logging.error(f"Error saving phishing check: {err}")
         finally:
-            if cursor:
+            if conn.is_connected():
                 cursor.close()
-            if conn:
                 conn.close()
 
     return jsonify({'verdict': verdict, 'reasons': reasons})
@@ -1003,9 +1025,8 @@ def report_api():
 
     conn = get_db_connection()
     if conn:
-        cursor = None
+        cursor = conn.cursor()
         try:
-            cursor = conn.cursor()
             # For extension reports, use user_id 1
             cursor.execute("""
                 INSERT INTO phishing_reports (reporter, subject, reason, reported_type, created_at) 
@@ -1013,13 +1034,12 @@ def report_api():
             """, (1, url, "Reported via extension", "url", datetime.utcnow().isoformat()))
             conn.commit()
             return jsonify({'message': 'Report saved successfully!'})
-        except psycopg2.Error as err:
+        except mysql.connector.Error as err:
             logging.error(f"Error saving report: {err}")
             return jsonify({'message': 'Failed to save report'}), 500
         finally:
-            if cursor:
+            if conn.is_connected():
                 cursor.close()
-            if conn:
                 conn.close()
     
     return jsonify({'message': 'Database connection failed'}), 500
@@ -1032,9 +1052,8 @@ def admin_reports():
     if not conn:
         return "Database connection failed", 500
 
-    cursor = None
+    cursor = conn.cursor(dictionary=True)
     try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("SELECT * FROM phishing_reports ORDER BY created_at DESC")
         reports = cursor.fetchall()
         
@@ -1043,13 +1062,12 @@ def admin_reports():
         
         return render_template('admin_reports.html', reports=reports, checks=checks)
         
-    except psycopg2.Error as err:
+    except mysql.connector.Error as err:
         logging.error(f"Error loading admin reports: {err}")
         return f"Error loading reports: {err}", 500
     finally:
-        if cursor:
+        if conn.is_connected():
             cursor.close()
-        if conn:
             conn.close()
 
 # --- EXISTING ROUTES ---
