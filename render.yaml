@@ -8,9 +8,14 @@ services:
     envVars:
       - key: SECRET_KEY
         generateValue: true
-      - key: SUPABASE_PASSWORD
+      
+      - key: DB_HOST
+        value: db.ezsqvlwxqiwewidquvwp.supabase.co
+      - key: DB_USER
+        value: postgres
+      - key: DB_PASSWORD
         value: Harris@2005
-      - key: DOMAIN
-        value: https://keyshield.my
-      - key: DEBUG
-        value: false
+      - key: DB_NAME
+        value: postgres
+      - key: DB_PORT
+        value: 5432
