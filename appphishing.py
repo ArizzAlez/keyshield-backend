@@ -7,34 +7,52 @@ from flask import Flask, request, jsonify, render_template, make_response
 from flask_bcrypt import Bcrypt
 from flask_cors import CORS
 import jwt
-import mysql.connector.pooling
+import psycopg2
 from functools import wraps
 import random 
 from urllib.parse import urlparse
-from dotenv import load_dotenv  # ADD THIS LINE
+from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
 
 # --- Configuration from Environment Variables ---
 SECRET_KEY = os.environ.get('SECRET_KEY', 'fallback-secret-key-change-in-production')
-DOMAIN = os.environ.get('DOMAIN', 'https://keyshield-backend.onrender.com')
+DOMAIN = os.environ.get('DOMAIN', 'https://keyshield.my')
 DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
 
-# --- Database Configuration from Environment Variables ---
-db_pool_config = {
-    "host": os.environ.get('DB_HOST', 'v1529.securen.net'),
-    "user": os.environ.get('DB_USER', 'keyshiel_ajiz'),
-    "password": os.environ.get('DB_PASSWORD', 'Harris@2005'),
-    "database": os.environ.get('DB_NAME', 'keyshiel_keyshield'),
-    "pool_name": "mypool",
-    "pool_size": 5,
-    "port": 3306,  # Explicit MySQL port
-    "connect_timeout": 30,  # Add timeout for production
-    "use_pure": True  # Use pure Python implementation
-}
-
-DB_NAME = os.environ.get('DB_NAME', 'keyshiel_keyshield')
+# --- Database Configuration for Railway PostgreSQL ---
+def get_db_connection():
+    """Retrieves a database connection for Railway PostgreSQL."""
+    try:
+        # Railway provides DATABASE_URL environment variable
+        database_url = os.environ.get('DATABASE_URL')
+        
+        if database_url:
+            # Parse the database URL for PostgreSQL
+            url = urlparse(database_url)
+            conn = psycopg2.connect(
+                host=url.hostname,
+                database=url.path[1:],  # Remove leading /
+                user=url.username,
+                password=url.password,
+                port=url.port
+            )
+        else:
+            # Fallback for local development with PostgreSQL
+            conn = psycopg2.connect(
+                host=os.environ.get('DB_HOST', 'localhost'),
+                database=os.environ.get('DB_NAME', 'keyshield'),
+                user=os.environ.get('DB_USER', 'postgres'),
+                password=os.environ.get('DB_PASSWORD', ''),
+                port=os.environ.get('DB_PORT', 5432)
+            )
+        
+        logging.info("✅ PostgreSQL Database connected successfully!")
+        return conn
+    except Exception as e:
+        logging.error(f"❌ Database connection failed: {e}")
+        return None
 
 # --- Phishing Detection Configuration ---
 TRUSTED_DOMAINS = [
@@ -122,32 +140,12 @@ CORS(app, origins=[
     "http://127.0.0.1:5173"                   # Vite dev server
 ])
 
-
 bcrypt = Bcrypt(app)
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO,
                     format='[%(asctime)s] %(levelname)s in %(filename)s: %(message)s',
                     datefmt='%Y-%m-%d %H:%M:%S')
-
-# --- Database Connection Pool Setup ---
-db_pool = None
-
-def get_db_connection():
-    """Retrieves a connection from the pool (lazy initialization)."""
-    global db_pool
-    if db_pool is None:
-        try:
-            db_pool = mysql.connector.pooling.MySQLConnectionPool(**db_pool_config)
-            logging.info(f"MySQL Connection Pool initialized for database '{DB_NAME}'.")
-        except mysql.connector.Error as err:
-            logging.error(f"Error getting connection from pool: {err}")
-            return None
-    try:
-        return db_pool.get_connection()
-    except mysql.connector.Error as err:
-        logging.error(f"Error getting connection: {err}")
-        return None
 
 # --- JWT Decorator for protected routes ---
 def token_required(f):
@@ -175,32 +173,126 @@ def token_required(f):
         return f(*args, **kwargs)
     return decorated
 
-# --- Health Check Endpoint (Required for Render) ---
+# --- Database Initialization ---
+def init_database():
+    """Initialize database tables if they don't exist"""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
+    cursor = conn.cursor()
+    try:
+        # Users table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id SERIAL PRIMARY KEY,
+                username VARCHAR(80) UNIQUE NOT NULL,
+                email VARCHAR(120) UNIQUE,
+                password_hash VARCHAR(255) NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                keystroke_model TEXT
+            )
+        """)
+        
+        # User activities table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_activities (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(user_id),
+                activity_type VARCHAR(50),
+                domain VARCHAR(255),
+                details TEXT,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Security events table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS security_events (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(user_id),
+                domain VARCHAR(255),
+                event_type VARCHAR(100),
+                verdict VARCHAR(100),
+                details TEXT,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Websites table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS websites (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(user_id),
+                domain VARCHAR(255),
+                keystrokes_protected INTEGER DEFAULT 0,
+                phishing_attempts_blocked INTEGER DEFAULT 0,
+                last_visited TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, domain)
+            )
+        """)
+        
+        # User activity stats table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_activity_stats (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(user_id) UNIQUE,
+                keystrokes_protected INTEGER DEFAULT 0,
+                websites_checked INTEGER DEFAULT 0,
+                phishing_blocked INTEGER DEFAULT 0,
+                threats_detected INTEGER DEFAULT 0,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Phishing reports table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS phishing_reports (
+                id SERIAL PRIMARY KEY,
+                reporter INTEGER REFERENCES users(user_id),
+                subject TEXT,
+                reason TEXT,
+                reported_type VARCHAR(50),
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Phishing checks table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS phishing_checks (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(user_id),
+                input_text TEXT,
+                input_type VARCHAR(50),
+                verdict VARCHAR(50),
+                reasons TEXT,
+                checked_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        logging.info("✅ PostgreSQL Database tables created successfully!")
+        return True
+        
+    except Exception as e:
+        logging.error(f"❌ Database initialization failed: {e}")
+        return False
+
+# --- Health Check Endpoint ---
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint for Render"""
-    try:
-        # Test database connection
-        conn = get_db_connection()
-        if conn:
-            conn.close()
-            return jsonify({
-                'status': 'healthy', 
-                'database': 'connected',
-                'timestamp': datetime.now(timezone.utc).isoformat()
-            }), 200
-        else:
-            return jsonify({
-                'status': 'unhealthy',
-                'database': 'disconnected',
-                'timestamp': datetime.now(timezone.utc).isoformat()
-            }), 503
-    except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'error': str(e),
-            'timestamp': datetime.now(timezone.utc).isoformat()
-        }), 500
+    if init_database():
+        return jsonify({'status': 'healthy', 'database': 'connected', 'service': 'Railway PostgreSQL'})
+    return jsonify({'status': 'unhealthy', 'database': 'disconnected'}), 503
+
+# --- Database Setup Endpoint ---
+@app.route('/setup-db', methods=['GET'])
+def setup_database_route():
+    if init_database():
+        return jsonify({'success': True, 'message': 'Database initialized successfully!'})
+    return jsonify({'success': False, 'message': 'Database initialization failed'}), 500
 
 # --- Route for REGISTRATION ---
 @app.route('/api/register', methods=['POST'])
@@ -212,6 +304,9 @@ def register():
     username = request.json['username']
     email = request.json.get('email', '')
     password = request.json['password']
+    
+    # Initialize database if needed
+    init_database()
     
     conn = get_db_connection()
     if not conn:
@@ -229,17 +324,19 @@ def register():
         password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
         cursor.execute("""
             INSERT INTO users (username, email, password_hash)
-            VALUES (%s, %s, %s)
+            VALUES (%s, %s, %s) RETURNING user_id
         """, (username, email, password_hash))
+        
+        user_id = cursor.fetchone()[0]
         conn.commit()
         
-        return jsonify({'success': True, 'message': 'Registration successful'}), 201
+        return jsonify({'success': True, 'message': 'Registration successful', 'user_id': user_id}), 201
         
-    except mysql.connector.Error as err:
-        logging.error(f"MySQL Error during registration: {err}")
+    except Exception as err:
+        logging.error(f"PostgreSQL Error during registration: {err}")
         return jsonify({'message': 'Registration failed'}), 500
     finally:
-        if conn and conn.is_connected():
+        if conn:
             cursor.close()
             conn.close()
 
@@ -264,7 +361,7 @@ def api_login():
     if not conn:
         return jsonify({'message': 'Database connection error'}), 503
 
-    cursor = conn.cursor(dictionary=True)
+    cursor = conn.cursor()
     try:
         # Find user by username OR email
         if username:
@@ -278,12 +375,12 @@ def api_login():
             return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
 
         # Verify password
-        if not bcrypt.check_password_hash(user['password_hash'], password):
+        if not bcrypt.check_password_hash(user[2], password):  # password_hash is at index 2
             return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
         
         # Check if keystroke enrollment is needed
         requires_enrollment = False
-        keystroke_model = user.get('keystroke_model')
+        keystroke_model = user[3]  # keystroke_model is at index 3
         keystroke_valid = True  # Default to True if no model exists
         
         if keystroke_model:
@@ -297,7 +394,7 @@ def api_login():
                     is_speed_valid = speed_variation <= tolerance
                     
                     if not is_speed_valid:
-                        logging.warning(f"Typing speed anomaly for user {user['username']}: {speed_variation*100:.1f}% variation (current: {current_speed:.2f}ms, expected: {avg_speed:.2f}ms)")
+                        logging.warning(f"Typing speed anomaly for user {user[1]}: {speed_variation*100:.1f}% variation (current: {current_speed:.2f}ms, expected: {avg_speed:.2f}ms)")
                         # BLOCK login for suspicious typing pattern
                         return jsonify({
                             'success': False, 
@@ -305,37 +402,37 @@ def api_login():
                             'requires_enrollment': False
                         }), 401
                     else:
-                        logging.info(f"Keystroke validation passed for user {user['username']}: {speed_variation*100:.1f}% variation")
+                        logging.info(f"Keystroke validation passed for user {user[1]}: {speed_variation*100:.1f}% variation")
                     
             except json.JSONDecodeError:
-                logging.warning(f"Invalid keystroke model for user {user['username']}")
+                logging.warning(f"Invalid keystroke model for user {user[1]}")
                 requires_enrollment = True
         else:
             requires_enrollment = True
 
         # Generate JWT Token
         payload = {
-            'user_id': user['user_id'],
-            'username': user['username'],
+            'user_id': user[0],  # user_id is at index 0
+            'username': user[1],  # username is at index 1
             'exp': datetime.now(timezone.utc) + timedelta(hours=24)
         }
         token = jwt.encode(payload, app.config['SECRET_KEY'], algorithm="HS256")
         
-        logging.info(f"Login successful for user: {user['username']}")
+        logging.info(f"Login successful for user: {user[1]}")
         
         return jsonify({
             'success': True, 
             'message': 'Login successful!', 
             'token': token,
-            'username': user['username'],
+            'username': user[1],
             'requires_enrollment': requires_enrollment
         }), 200
 
-    except mysql.connector.Error as err:
-        logging.error(f"MySQL Error during login: {err}")
+    except Exception as err:
+        logging.error(f"PostgreSQL Error during login: {err}")
         return jsonify({'message': 'Server error'}), 500
     finally:
-        if conn and conn.is_connected():
+        if conn:
             cursor.close()
             conn.close()
 
@@ -361,12 +458,12 @@ def enroll_keystroke():
     if not conn:
         return jsonify({'message': 'Database connection error'}), 503
 
-    cursor = conn.cursor(dictionary=True)
+    cursor = conn.cursor()
     try:
         cursor.execute("SELECT password_hash FROM users WHERE user_id = %s", (user_id,))
         user = cursor.fetchone()
         
-        if not user or not bcrypt.check_password_hash(user['password_hash'], password):
+        if not user or not bcrypt.check_password_hash(user[0], password):
             return jsonify({'success': False, 'message': 'Password verification failed'}), 401
         
         # Store keystroke model
@@ -389,11 +486,11 @@ def enroll_keystroke():
         
         return jsonify({'success': True, 'message': 'Keystroke protection enabled'}), 200
         
-    except mysql.connector.Error as err:
-        logging.error(f"MySQL Error during keystroke enrollment: {err}")
+    except Exception as err:
+        logging.error(f"PostgreSQL Error during keystroke enrollment: {err}")
         return jsonify({'message': 'Enrollment failed'}), 500
     finally:
-        if conn and conn.is_connected():
+        if conn:
             cursor.close()
             conn.close()
 
@@ -409,7 +506,7 @@ def get_user_stats():
     if not conn:
         return jsonify({'message': 'Database connection error'}), 503
 
-    cursor = conn.cursor(dictionary=True, buffered=True)
+    cursor = conn.cursor()
     try:
         # REAL DATA: Total keystrokes protected from user_activities
         cursor.execute("""
@@ -418,7 +515,7 @@ def get_user_stats():
             WHERE user_id = %s AND activity_type = 'keystrokes_protected'
         """, (user_id,))
         keystrokes_result = cursor.fetchone()
-        total_keystrokes = keystrokes_result['total_keystrokes'] if keystrokes_result else 0
+        total_keystrokes = keystrokes_result[0] if keystrokes_result else 0
 
         # REAL DATA: Phishing attempts blocked (from phishing_reports + suspicious security_events)
         cursor.execute("""
@@ -427,7 +524,7 @@ def get_user_stats():
             WHERE reporter = %s
         """, (user_id,))
         phishing_reports_result = cursor.fetchone()
-        phishing_from_reports = phishing_reports_result['phishing_blocked'] if phishing_reports_result else 0
+        phishing_from_reports = phishing_reports_result[0] if phishing_reports_result else 0
 
         # Also count suspicious security events as phishing attempts blocked
         cursor.execute("""
@@ -436,7 +533,7 @@ def get_user_stats():
             WHERE user_id = %s AND (verdict = 'suspicious' OR verdict != 'safe')
         """, (user_id,))
         suspicious_result = cursor.fetchone()
-        phishing_from_events = suspicious_result['suspicious_events'] if suspicious_result else 0
+        phishing_from_events = suspicious_result[0] if suspicious_result else 0
 
         total_phishing_blocked = phishing_from_reports + phishing_from_events
 
@@ -447,7 +544,7 @@ def get_user_stats():
             WHERE user_id = %s AND verdict != 'safe'
         """, (user_id,))
         threats_result = cursor.fetchone()
-        threats_detected = threats_result['threats_detected'] if threats_result else 0
+        threats_detected = threats_result[0] if threats_result else 0
 
         # REAL DATA: Safe sessions (websites checked that were safe + website visits)
         cursor.execute("""
@@ -456,7 +553,7 @@ def get_user_stats():
             WHERE user_id = %s AND verdict = 'safe'
         """, (user_id,))
         safe_checks_result = cursor.fetchone()
-        safe_checks = safe_checks_result['safe_checks'] if safe_checks_result else 0
+        safe_checks = safe_checks_result[0] if safe_checks_result else 0
 
         # Also count website visits as safe sessions
         cursor.execute("""
@@ -465,7 +562,7 @@ def get_user_stats():
             WHERE user_id = %s AND activity_type = 'website_visit'
         """, (user_id,))
         visits_result = cursor.fetchone()
-        website_visits = visits_result['website_visits'] if visits_result else 0
+        website_visits = visits_result[0] if visits_result else 0
 
         total_safe_sessions = safe_checks + website_visits
 
@@ -477,17 +574,18 @@ def get_user_stats():
         cursor.execute("""
             INSERT INTO user_activity_stats (user_id, keystrokes_protected, websites_checked, phishing_blocked, threats_detected)
             VALUES (%s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE 
-                keystrokes_protected = VALUES(keystrokes_protected),
-                websites_checked = VALUES(websites_checked),
-                phishing_blocked = VALUES(phishing_blocked),
-                threats_detected = VALUES(threats_detected)
+            ON CONFLICT (user_id) DO UPDATE SET 
+                keystrokes_protected = EXCLUDED.keystrokes_protected,
+                websites_checked = EXCLUDED.websites_checked,
+                phishing_blocked = EXCLUDED.phishing_blocked,
+                threats_detected = EXCLUDED.threats_detected,
+                updated_at = CURRENT_TIMESTAMP
         """, (user_id, total_keystrokes, total_safe_sessions, total_phishing_blocked, threats_detected))
         
         conn.commit()
         
         dashboard_stats = {
-            'username': user['username'] if user else 'User',
+            'username': user[0] if user else 'User',
             'keystrokesProtected': total_keystrokes,
             'phishingAttemptsBlocked': total_phishing_blocked,
             'threatsDetected': threats_detected,
@@ -503,11 +601,11 @@ def get_user_stats():
         
         return jsonify({'stats': dashboard_stats}), 200
         
-    except mysql.connector.Error as err:
-        logging.error(f"MySQL Error fetching user stats: {err}")
+    except Exception as err:
+        logging.error(f"PostgreSQL Error fetching user stats: {err}")
         return jsonify({'message': 'Failed to fetch stats'}), 500
     finally:
-        if conn and conn.is_connected():
+        if conn:
             cursor.close()
             conn.close()
 
@@ -522,7 +620,7 @@ def get_user_websites():
     if not conn:
         return jsonify({'message': 'Database connection error'}), 503
 
-    cursor = conn.cursor(dictionary=True)
+    cursor = conn.cursor()
     try:
         # Get websites data from websites table
         cursor.execute("""
@@ -543,24 +641,24 @@ def get_user_websites():
         # Format the response to match Dashboard expectations
         formatted_websites = []
         for site in websites:
-            print(f"🔍 DEBUG Website: {site['domain']} - Keystrokes: {site['keystrokes_protected']}")
+            print(f"🔍 DEBUG Website: {site[0]} - Keystrokes: {site[1]}")
             
             # Calculate risk level based on phishing attempts and activity
             risk_level = 5  # Default safe
             security_status = 'safe'
             
-            if site['phishing_attempts_blocked'] and site['phishing_attempts_blocked'] > 0:
+            if site[2] and site[2] > 0:  # phishing_attempts_blocked
                 risk_level = 80
                 security_status = 'danger'
-            elif site['keystrokes_protected'] and site['keystrokes_protected'] > 10:
-                risk_level = min(20 + (site['keystrokes_protected'] // 10), 50)
+            elif site[1] and site[1] > 10:  # keystrokes_protected
+                risk_level = min(20 + (site[1] // 10), 50)
                 security_status = 'warning' if risk_level > 20 else 'safe'
             
             formatted_websites.append({
-                'domain': site['domain'],
+                'domain': site[0],
                 'securityStatus': security_status,
-                'lastVisited': site['last_visited'].strftime('%Y-%m-%d %H:%M:%S') if site['last_visited'] else 'Unknown',
-                'keystrokesProtected': site['keystrokes_protected'] or 0,
+                'lastVisited': site[3].strftime('%Y-%m-%d %H:%M:%S') if site[3] else 'Unknown',
+                'keystrokesProtected': site[1] or 0,
                 'riskLevel': risk_level
             })
         
@@ -568,11 +666,11 @@ def get_user_websites():
         
         return jsonify({'websites': formatted_websites}), 200
         
-    except mysql.connector.Error as err:
-        logging.error(f"MySQL Error fetching user websites: {err}")
+    except Exception as err:
+        logging.error(f"PostgreSQL Error fetching user websites: {err}")
         return jsonify({'message': 'Failed to fetch websites'}), 500
     finally:
-        if conn and conn.is_connected():
+        if conn:
             cursor.close()
             conn.close()
 
@@ -587,7 +685,7 @@ def get_user_events():
     if not conn:
         return jsonify({'message': 'Database connection error'}), 503
 
-    cursor = conn.cursor(dictionary=True)
+    cursor = conn.cursor()
     try:
         # Get both phishing reports and security events
         cursor.execute("""
@@ -611,20 +709,20 @@ def get_user_events():
         formatted_events = []
         for event in events:
             formatted_events.append({
-                'id': event['id'],
-                'url': event['url'],
-                'type': event['type'] or 'security_scan',
-                'reason': event['reason'] or 'Security scan performed',
-                'reported_at': event['created_at'].strftime('%Y-%m-%d %H:%M:%S') if event['created_at'] else 'Unknown'
+                'id': event[0],
+                'url': event[1],
+                'type': event[2] or 'security_scan',
+                'reason': event[3] or 'Security scan performed',
+                'reported_at': event[4].strftime('%Y-%m-%d %H:%M:%S') if event[4] else 'Unknown'
             })
         
         return jsonify({'events': formatted_events}), 200
         
-    except mysql.connector.Error as err:
-        logging.error(f"MySQL Error fetching user events: {err}")
+    except Exception as err:
+        logging.error(f"PostgreSQL Error fetching user events: {err}")
         return jsonify({'message': 'Failed to fetch events'}), 500
     finally:
-        if conn and conn.is_connected():
+        if conn:
             cursor.close()
             conn.close()
 
@@ -638,7 +736,7 @@ def get_dashboard_events():
     if not conn:
         return jsonify({'message': 'Database connection error'}), 503
 
-    cursor = conn.cursor(dictionary=True)
+    cursor = conn.cursor()
     try:
         # Get recent activities
         cursor.execute("""
@@ -667,11 +765,11 @@ def get_dashboard_events():
         for activity in activities:
             formatted_events.append({
                 'id': len(formatted_events) + 1,
-                'type': activity['activity_type'],
+                'type': activity[0],
                 'severity': 'medium',  # Default severity
-                'message': f"Activity: {activity['activity_type']}",
-                'website': activity['domain'] or 'Unknown',
-                'timestamp': activity['created_at'].isoformat() if activity['created_at'] else '',
+                'message': f"Activity: {activity[0]}",
+                'website': activity[1] or 'Unknown',
+                'timestamp': activity[3].isoformat() if activity[3] else '',
                 'resolved': False
             })
         
@@ -681,19 +779,19 @@ def get_dashboard_events():
                 'id': len(formatted_events) + 1,
                 'type': 'phishing',
                 'severity': 'high',
-                'message': f"Reported: {report['reason']}",
-                'website': report['domain'],
-                'timestamp': report['created_at'].isoformat() if report['created_at'] else '',
+                'message': f"Reported: {report[1]}",
+                'website': report[0],
+                'timestamp': report[3].isoformat() if report[3] else '',
                 'resolved': False
             })
         
         return jsonify({'events': formatted_events}), 200
         
-    except mysql.connector.Error as err:
-        logging.error(f"MySQL Error fetching dashboard events: {err}")
+    except Exception as err:
+        logging.error(f"PostgreSQL Error fetching dashboard events: {err}")
         return jsonify({'message': 'Failed to fetch events'}), 500
     finally:
-        if conn and conn.is_connected():
+        if conn:
             cursor.close()
             conn.close()
 
@@ -729,8 +827,8 @@ def track_website_visit():
         cursor.execute("""
             INSERT INTO websites (user_id, domain, last_visited)
             VALUES (%s, %s, %s)
-            ON DUPLICATE KEY UPDATE 
-            last_visited = VALUES(last_visited)
+            ON CONFLICT (user_id, domain) DO UPDATE SET 
+            last_visited = EXCLUDED.last_visited
         """, (user_id, domain, datetime.now()))
         
         conn.commit()
@@ -741,7 +839,7 @@ def track_website_visit():
         logging.error(f"Error tracking website visit: {e}")
         return jsonify({'message': 'Tracking failed'}), 500
     finally:
-        if conn.is_connected():
+        if conn:
             cursor.close()
             conn.close()
 
@@ -778,9 +876,9 @@ def track_security_event():
             cursor.execute("""
                 INSERT INTO websites (user_id, domain, phishing_attempts_blocked, last_visited)
                 VALUES (%s, %s, 1, %s)
-                ON DUPLICATE KEY UPDATE 
-                phishing_attempts_blocked = COALESCE(phishing_attempts_blocked, 0) + 1,
-                last_visited = VALUES(last_visited)
+                ON CONFLICT (user_id, domain) DO UPDATE SET 
+                phishing_attempts_blocked = websites.phishing_attempts_blocked + 1,
+                last_visited = EXCLUDED.last_visited
             """, (user_id, domain, datetime.now()))
             
             print(f"🚨 Tracked suspicious event for {domain} - verdict: {verdict}")
@@ -793,7 +891,7 @@ def track_security_event():
         logging.error(f"Error tracking security event: {e}")
         return jsonify({'message': 'Event tracking failed'}), 500
     finally:
-        if conn and conn.is_connected():
+        if conn:
             cursor.close()
             conn.close()
             
@@ -835,7 +933,7 @@ def track_keystrokes():
             return jsonify({"success": False, "message": "Invalid data"}), 400
 
         conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor()
 
         # 1. Track as user activity
         cursor.execute("""
@@ -850,17 +948,18 @@ def track_keystrokes():
         cursor.execute("""
             INSERT INTO user_activity_stats (user_id, keystrokes_protected, websites_checked, phishing_blocked, threats_detected)
             VALUES (%s, %s, 0, 0, 0)
-            ON DUPLICATE KEY UPDATE 
-                keystrokes_protected = keystrokes_protected + %s
+            ON CONFLICT (user_id) DO UPDATE SET 
+                keystrokes_protected = user_activity_stats.keystrokes_protected + %s,
+                updated_at = CURRENT_TIMESTAMP
         """, (user_id, count, count))
         
         # 3. Update websites table with keystrokes protected - INCREMENT the count
         cursor.execute("""
             INSERT INTO websites (user_id, domain, keystrokes_protected, last_visited)
             VALUES (%s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE 
-                keystrokes_protected = keystrokes_protected + %s,
-                last_visited = VALUES(last_visited)
+            ON CONFLICT (user_id, domain) DO UPDATE SET 
+                keystrokes_protected = websites.keystrokes_protected + %s,
+                last_visited = EXCLUDED.last_visited
         """, (user_id, domain, count, datetime.now(), count))
         
         conn.commit()
@@ -910,23 +1009,23 @@ def track_user_activity():
             cursor.execute("""
                 INSERT INTO user_activity_stats (user_id, websites_checked) 
                 VALUES (%s, 1)
-                ON DUPLICATE KEY UPDATE websites_checked = websites_checked + 1
+                ON CONFLICT (user_id) DO UPDATE SET websites_checked = user_activity_stats.websites_checked + 1
             """, (user_id,))
         elif activity_type == 'website_reported':
             cursor.execute("""
                 INSERT INTO user_activity_stats (user_id, phishing_blocked) 
                 VALUES (%s, 1)
-                ON DUPLICATE KEY UPDATE phishing_blocked = phishing_blocked + 1
+                ON CONFLICT (user_id) DO UPDATE SET phishing_blocked = user_activity_stats.phishing_blocked + 1
             """, (user_id,))
             
         conn.commit()
         return jsonify({'success': True}), 200
         
-    except mysql.connector.Error as err:
-        logging.error(f"MySQL Error tracking activity: {err}")
+    except Exception as err:
+        logging.error(f"PostgreSQL Error tracking activity: {err}")
         return jsonify({'message': 'Failed to track activity'}), 500
     finally:
-        if conn and conn.is_connected():
+        if conn:
             cursor.close()
             conn.close()
 
@@ -982,10 +1081,10 @@ def analyze_url_api():
                   json.dumps({'verdict': verdict, 'reasons': reasons})))
             conn.commit()
             
-        except mysql.connector.Error as err:
+        except Exception as err:
             logging.error(f"Error saving phishing check: {err}")
         finally:
-            if conn.is_connected():
+            if conn:
                 cursor.close()
                 conn.close()
 
@@ -1011,10 +1110,10 @@ def analyze():
                 VALUES (%s, %s, %s, %s, %s, %s)
             """, (1, raw, "url", verdict, reasons, datetime.utcnow().isoformat()))
             conn.commit()
-        except mysql.connector.Error as err:
+        except Exception as err:
             logging.error(f"Error saving phishing check: {err}")
         finally:
-            if conn.is_connected():
+            if conn:
                 cursor.close()
                 conn.close()
 
@@ -1037,11 +1136,11 @@ def report_api():
             """, (1, url, "Reported via extension", "url", datetime.utcnow().isoformat()))
             conn.commit()
             return jsonify({'message': 'Report saved successfully!'})
-        except mysql.connector.Error as err:
+        except Exception as err:
             logging.error(f"Error saving report: {err}")
             return jsonify({'message': 'Failed to save report'}), 500
         finally:
-            if conn.is_connected():
+            if conn:
                 cursor.close()
                 conn.close()
     
@@ -1055,7 +1154,7 @@ def admin_reports():
     if not conn:
         return "Database connection failed", 500
 
-    cursor = conn.cursor(dictionary=True)
+    cursor = conn.cursor()
     try:
         cursor.execute("SELECT * FROM phishing_reports ORDER BY created_at DESC")
         reports = cursor.fetchall()
@@ -1063,13 +1162,37 @@ def admin_reports():
         cursor.execute("SELECT * FROM phishing_checks ORDER BY checked_at DESC")
         checks = cursor.fetchall()
         
-        return render_template('admin_reports.html', reports=reports, checks=checks)
+        # Convert to dictionaries for template
+        reports_dict = []
+        for report in reports:
+            reports_dict.append({
+                'id': report[0],
+                'reporter': report[1],
+                'subject': report[2],
+                'reason': report[3],
+                'reported_type': report[4],
+                'created_at': report[5]
+            })
+            
+        checks_dict = []
+        for check in checks:
+            checks_dict.append({
+                'id': check[0],
+                'user_id': check[1],
+                'input_text': check[2],
+                'input_type': check[3],
+                'verdict': check[4],
+                'reasons': check[5],
+                'checked_at': check[6]
+            })
         
-    except mysql.connector.Error as err:
+        return render_template('admin_reports.html', reports=reports_dict, checks=checks_dict)
+        
+    except Exception as err:
         logging.error(f"Error loading admin reports: {err}")
         return f"Error loading reports: {err}", 500
     finally:
-        if conn.is_connected():
+        if conn:
             cursor.close()
             conn.close()
 
@@ -1078,7 +1201,7 @@ def admin_reports():
 @app.route('/', methods=['GET'])
 def home():
     """Simple health check endpoint."""
-    return jsonify({'message': 'KeyShield API is running!'}), 200
+    return jsonify({'message': 'KeyShield API is running on Railway PostgreSQL!'}), 200
 
 @app.route('/report_keystroke_data', methods=['POST'])
 @token_required
@@ -1096,6 +1219,8 @@ def report_keystroke_data():
 
 # --- Run the App ---
 if __name__ == '__main__':
+    # Initialize database on startup
+    init_database()
+    
     port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port, debug=DEBUG)
-
