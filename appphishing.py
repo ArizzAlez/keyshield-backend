@@ -9,6 +9,7 @@ from flask_cors import CORS
 import jwt
 import psycopg
 from psycopg_pool import ConnectionPool
+from psycopg.rows import dict_row
 from functools import wraps
 import random 
 from urllib.parse import urlparse
@@ -1056,3 +1057,4 @@ def report_keystroke_data():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port, debug=DEBUG)
+
