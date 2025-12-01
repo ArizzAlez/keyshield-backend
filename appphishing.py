@@ -16,8 +16,8 @@ from dotenv import load_dotenv
 import smtplib
 import threading
 import time
-from email.mime.text import MimeText
-from email.mime.multipart import MimeMultipart
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # Load environment variables from .env file
 load_dotenv()
@@ -357,7 +357,7 @@ def send_otp_email_gmail(email, otp_code):
         from_email = 'KeyShield <jackerjinx@gmail.com>'
         
         # Create email message
-        msg = MimeMultipart()
+        msg = MIMEMultipart()
         msg['From'] = from_email
         msg['To'] = email
         msg['Subject'] = 'Your KeyShield Verification Code'
@@ -399,7 +399,7 @@ def send_otp_email_gmail(email, otp_code):
         </html>
         """
         
-        msg.attach(MimeText(html_content, 'html'))
+        msg.attach(MIMEText(html_content, 'html'))
         
         # Send email
         with smtplib.SMTP(smtp_server, smtp_port) as server:
@@ -1539,4 +1539,5 @@ def report_keystroke_data():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port, debug=DEBUG)
+
 
