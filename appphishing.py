@@ -139,7 +139,7 @@ app.config['SECRET_KEY'] = SECRET_KEY
 CORS(app, origins=[
     "https://keyshield.my",                    # Your frontend domain
     "https://www.keyshield.my",               # Your www domain
-    "https://keyshield-backend.onrender.com", # Your backend domain
+    "web-production-75759.up.railway.app", # Your backend domain
     "chrome-extension://*",                   # Chrome extension
     "http://localhost:3000",                  # Local development
     "http://127.0.0.1:3000",                  # Local development
@@ -1542,3 +1542,4 @@ def report_keystroke_data():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port, debug=DEBUG)
+
