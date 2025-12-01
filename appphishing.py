@@ -350,11 +350,11 @@ def send_otp_email_gmail(email, otp_code):
     """Send OTP using Gmail SMTP (Permanent Production Solution)"""
     try:
         # Get credentials from environment variables
-        smtp_server = os.environ.get('SMTP_SERVER', 'smtp.gmail.com')
-        smtp_port = int(os.environ.get('SMTP_PORT', 587))
-        smtp_username = os.environ.get('SMTP_USERNAME', 'jackerjinx@gmail.com')
-        smtp_password = os.environ.get('SMTP_PASSWORD', 'mtckkxyskwfydqgi')
-        from_email = os.environ.get('FROM_EMAIL', 'KeyShield <jackerjinx@gmail.com>')
+        smtp_server = 'smtp.gmail.com'
+        smtp_port = 587
+        smtp_username = 'jackerjinx@gmail.com'
+        smtp_password = 'mtckkxyskwfydqgi'
+        from_email = 'KeyShield <jackerjinx@gmail.com>'
         
         # Create email message
         msg = MimeMultipart()
@@ -1539,3 +1539,4 @@ def report_keystroke_data():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port, debug=DEBUG)
+
