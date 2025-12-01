@@ -167,6 +167,7 @@ def get_db_connection():
 
 # --- Initialize PostgreSQL Tables ---
 def create_tables_safely():
+    """Initialize tables only if they don't exist - with restart protection"""
     conn = get_db_connection()
     if not conn:
         print("❌ Cannot connect to database")
@@ -175,7 +176,20 @@ def create_tables_safely():
     cursor = conn.cursor()
     
     try:
-        # SIMPLE: Just create tables without ENUM types
+        # Check if tables already exist to prevent recreation on worker restarts
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'users'
+            );
+        """)
+        tables_exist = cursor.fetchone()[0]
+        
+        if tables_exist:
+            print("ℹ️  Tables already exist, skipping creation")
+            return True
+        
+        # Only create tables if they don't exist
         tables_sql = [
             ("""CREATE TABLE IF NOT EXISTS users (
                 user_id SERIAL PRIMARY KEY,
@@ -198,8 +212,8 @@ def create_tables_safely():
             ("""CREATE TABLE IF NOT EXISTS events (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                type VARCHAR(20) NOT NULL,  -- CHANGED: VARCHAR instead of ENUM
-                severity VARCHAR(20) NOT NULL,  -- CHANGED: VARCHAR instead of ENUM
+                type VARCHAR(20) NOT NULL,
+                severity VARCHAR(20) NOT NULL,
                 message TEXT,
                 website VARCHAR(255),
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -246,48 +260,15 @@ def create_tables_safely():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""", "phishing_reports"),
             
-            ("""-- Create new OTP table with proper schema
-CREATE TABLE IF NOT EXISTS otp_codes_new (
-    id SERIAL PRIMARY KEY,
-    email VARCHAR(255) NOT NULL,
-    otp_code VARCHAR(10) NOT NULL,
-    user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-    expires_at TIMESTAMP NOT NULL,
-    used BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)""", "otp_codes_new"),
-
-            ("""-- Migrate data from old table if it exists
-DO $$ 
-BEGIN
-    -- Check if old table exists
-    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'otp_codes') THEN
-        -- Copy valid OTPs from old table to new table
-        INSERT INTO otp_codes_new (email, otp_code, user_id, expires_at, used, created_at)
-        SELECT 
-            oc.email,
-            oc.otp_code,
-            COALESCE(u.user_id, 1) as user_id,  -- Fallback to user 1 if no match
-            oc.expires_at,
-            oc.used,
-            oc.created_at
-        FROM otp_codes oc
-        LEFT JOIN users u ON oc.email = u.email
-        WHERE oc.expires_at > NOW();
-        
-        -- Drop the old table
-        DROP TABLE otp_codes;
-        
-        RAISE NOTICE '✅ Successfully migrated OTP table';
-    ELSE
-        RAISE NOTICE 'ℹ️  OTP table is already up to date';
-    END IF;
-END $$;
-""", "migrate_otp_data"),
-
-            ("""-- Rename new table to proper name
-ALTER TABLE otp_codes_new RENAME TO otp_codes;
-""", "rename_otp_table"),
+            ("""CREATE TABLE IF NOT EXISTS otp_codes (
+                id SERIAL PRIMARY KEY,
+                email VARCHAR(255) NOT NULL,
+                otp_code VARCHAR(10) NOT NULL,
+                user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                expires_at TIMESTAMP NOT NULL,
+                used BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""", "otp_codes"),
             
             ("""CREATE TABLE IF NOT EXISTS security_events (
                 id SERIAL PRIMARY KEY,
@@ -316,8 +297,31 @@ ALTER TABLE otp_codes_new RENAME TO otp_codes;
         cursor.close()
         conn.close()
 
-# Initialize database when app starts
-create_tables_safely()
+# Initialize app with proper error handling
+def initialize_app():
+    """Initialize app with proper error handling"""
+    print("🚀 Initializing KeyShield Application...")
+    
+    # Fix imports first
+    try:
+        # This will fail if imports are wrong, preventing table creation
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+        print("✅ Email imports verified")
+    except ImportError as e:
+        print(f"❌ Import error: {e}")
+        return False
+    
+    # Then create tables
+    if create_tables_safely():
+        print("✅ Application initialized successfully")
+        return True
+    else:
+        print("❌ Application initialization failed")
+        return False
+
+# Initialize app on startup
+app_initialized = initialize_app()
 
 # --- JWT Decorator for protected routes ---
 def token_required(f):
@@ -1429,7 +1433,6 @@ def analyze_url_api():
             if conn:
                 cursor.close()
                 conn.close()
-
     return jsonify({
         'url': url, 
         'verdict': verdict, 
@@ -1539,5 +1542,3 @@ def report_keystroke_data():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port, debug=DEBUG)
-
-
