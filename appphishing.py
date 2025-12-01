@@ -13,6 +13,11 @@ from functools import wraps
 import random 
 from urllib.parse import urlparse
 from dotenv import load_dotenv
+import smtplib
+import threading
+import time
+from email.mime.text import MimeText
+from email.mime.multipart import MimeMultipart
 
 # Load environment variables from .env file
 load_dotenv()
@@ -91,6 +96,40 @@ def analyze_url(url):
 
     verdict = 'suspicious' if reasons else 'safe'
     return verdict, '; '.join(reasons)
+
+# --- Email Validation ---
+def is_valid_email(email):
+    """Comprehensive email validation"""
+    if not email:
+        return False
+    
+    import re
+    # Comprehensive email regex pattern
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    
+    # Basic length check
+    if len(email) > 254:  # RFC 5321 limit
+        return False
+    
+    # Regex validation
+    if not re.match(pattern, email):
+        return False
+    
+    # Additional checks for common issues
+    if email.count('@') != 1:
+        return False
+        
+    local_part, domain = email.split('@')
+    
+    # Local part should not start or end with dot
+    if local_part.startswith('.') or local_part.endswith('.'):
+        return False
+        
+    # Domain should have at least one dot
+    if '.' not in domain:
+        return False
+        
+    return True
 
 # --- App Initialization ---
 app = Flask(__name__, template_folder="templates")
@@ -207,14 +246,48 @@ def create_tables_safely():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""", "phishing_reports"),
             
-            ("""CREATE TABLE IF NOT EXISTS otp_codes (
-                id SERIAL PRIMARY KEY,
-                email VARCHAR(255) NOT NULL,
-                otp_code VARCHAR(10) NOT NULL,
-                expires_at TIMESTAMP,
-                used BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )""", "otp_codes"),
+            ("""-- Create new OTP table with proper schema
+CREATE TABLE IF NOT EXISTS otp_codes_new (
+    id SERIAL PRIMARY KEY,
+    email VARCHAR(255) NOT NULL,
+    otp_code VARCHAR(10) NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    expires_at TIMESTAMP NOT NULL,
+    used BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)""", "otp_codes_new"),
+
+            ("""-- Migrate data from old table if it exists
+DO $$ 
+BEGIN
+    -- Check if old table exists
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'otp_codes') THEN
+        -- Copy valid OTPs from old table to new table
+        INSERT INTO otp_codes_new (email, otp_code, user_id, expires_at, used, created_at)
+        SELECT 
+            oc.email,
+            oc.otp_code,
+            COALESCE(u.user_id, 1) as user_id,  -- Fallback to user 1 if no match
+            oc.expires_at,
+            oc.used,
+            oc.created_at
+        FROM otp_codes oc
+        LEFT JOIN users u ON oc.email = u.email
+        WHERE oc.expires_at > NOW();
+        
+        -- Drop the old table
+        DROP TABLE otp_codes;
+        
+        RAISE NOTICE '✅ Successfully migrated OTP table';
+    ELSE
+        RAISE NOTICE 'ℹ️  OTP table is already up to date';
+    END IF;
+END $$;
+""", "migrate_otp_data"),
+
+            ("""-- Rename new table to proper name
+ALTER TABLE otp_codes_new RENAME TO otp_codes;
+""", "rename_otp_table"),
             
             ("""CREATE TABLE IF NOT EXISTS security_events (
                 id SERIAL PRIMARY KEY,
@@ -272,48 +345,342 @@ def token_required(f):
         return f(*args, **kwargs)
     return decorated
 
+# --- PERMANENT GMAIL OTP SOLUTION ---
+def send_otp_email_gmail(email, otp_code):
+    """Send OTP using Gmail SMTP (Permanent Production Solution)"""
+    try:
+        # Get credentials from environment variables
+        smtp_server = os.environ.get('SMTP_SERVER', 'smtp.gmail.com')
+        smtp_port = int(os.environ.get('SMTP_PORT', 587))
+        smtp_username = os.environ.get('SMTP_USERNAME', 'jackerjinx@gmail.com')
+        smtp_password = os.environ.get('SMTP_PASSWORD', 'mtckkxyskwfydqgi')
+        from_email = os.environ.get('FROM_EMAIL', 'KeyShield <jackerjinx@gmail.com>')
+        
+        # Create email message
+        msg = MimeMultipart()
+        msg['From'] = from_email
+        msg['To'] = email
+        msg['Subject'] = 'Your KeyShield Verification Code'
+        
+        # Professional HTML email template
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <style>
+                body {{ font-family: Arial, sans-serif; background: #0b0f14; color: #e6f7ff; padding: 20px; }}
+                .container {{ max-width: 500px; margin: 0 auto; background: rgba(255,255,255,0.05); border-radius: 10px; padding: 30px; border: 1px solid rgba(0, 255, 255, 0.2); }}
+                .header {{ text-align: center; color: #0ff; }}
+                .otp-code {{ font-size: 32px; font-weight: bold; text-align: center; letter-spacing: 8px; color: #0ff; margin: 20px 0; text-shadow: 0 0 10px #0ff; }}
+                .warning {{ background: rgba(255, 0, 0, 0.1); border: 1px solid rgba(255, 0, 0, 0.3); padding: 15px; border-radius: 5px; margin: 20px 0; }}
+                .footer {{ color: #bcd; font-size: 12px; text-align: center; margin-top: 30px; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>🔒 KeyShield Security</h1>
+                </div>
+                <p>Your One-Time Password (OTP) for secure login is:</p>
+                <div class="otp-code">{otp_code}</div>
+                <p>This verification code will expire in <strong>10 minutes</strong>.</p>
+                <div class="warning">
+                    <strong>⚠️ Security Alert:</strong><br>
+                    Never share this code with anyone. KeyShield will never ask for your OTP.
+                </div>
+                <p>If you didn't request this code, please ignore this email.</p>
+                <div class="footer">
+                    KeyShield Security Team • Protecting Your Digital Life<br>
+                    {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        msg.attach(MimeText(html_content, 'html'))
+        
+        # Send email
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_username, smtp_password)
+            server.send_message(msg)
+        
+        print(f"✅ OTP email sent to {email}")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Failed to send email to {email}: {str(e)}")
+        return False
+
+def store_otp_in_database(email, otp_code, user_id):
+    """Store OTP - PERMANENT clean version"""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
+    cursor = conn.cursor()
+    try:
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+        cursor.execute(
+            "INSERT INTO otp_codes (email, otp_code, user_id, expires_at) VALUES (%s, %s, %s, %s)",
+            (email, otp_code, user_id, expires_at)
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"❌ Database error storing OTP: {e}")
+        conn.rollback()
+        return False
+    finally:
+        cursor.close()
+        conn.close()
+
+def verify_otp_from_database(email, otp_code):
+    """Verify OTP - PERMANENT clean version"""
+    conn = get_db_connection()
+    if not conn:
+        return None
+    
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        cursor.execute("""
+            SELECT oc.*, u.username 
+            FROM otp_codes oc 
+            JOIN users u ON oc.user_id = u.user_id 
+            WHERE oc.email = %s AND oc.otp_code = %s AND oc.expires_at > NOW() AND oc.used = false
+        """, (email, otp_code))
+        
+        otp_record = cursor.fetchone()
+        
+        if not otp_record:
+            return None
+        
+        cursor.execute("UPDATE otp_codes SET used = true WHERE id = %s", (otp_record['id'],))
+        conn.commit()
+        
+        return {
+            'user_id': otp_record['user_id'],
+            'username': otp_record['username']
+        }
+    except Exception as e:
+        print(f"❌ Database error verifying OTP: {e}")
+        conn.rollback()
+        return None
+    finally:
+        cursor.close()
+        conn.close()
+
+# --- AUTOMATIC CLEANUP ---
+def cleanup_expired_otps():
+    """Clean up expired OTPs from database"""
+    conn = get_db_connection()
+    if not conn:
+        return
+    
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM otp_codes WHERE expires_at < NOW()")
+        deleted_count = cursor.rowcount
+        conn.commit()
+        if deleted_count > 0:
+            print(f"🧹 Cleaned up {deleted_count} expired OTPs")
+    except Exception as e:
+        print(f"❌ OTP cleanup error: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
+
+# Run cleanup when app starts and every hour
+def start_cleanup_scheduler():
+    """Start background cleanup scheduler"""
+    cleanup_expired_otps()  # Run immediately on startup
+    
+    def scheduler():
+        while True:
+            time.sleep(3600)  # Wait 1 hour
+            cleanup_expired_otps()
+    
+    # Start in background thread
+    thread = threading.Thread(target=scheduler, daemon=True)
+    thread.start()
+
+# Start cleanup when Flask app initializes
+start_cleanup_scheduler()
+
+# --- OTP API ENDPOINTS ---
+@app.route('/api/send-otp', methods=['POST'])
+def send_otp():
+    """Send OTP to user's email"""
+    try:
+        data = request.get_json()
+        email = data.get('email', '').strip().lower()
+        
+        if not email:
+            return jsonify({'success': False, 'message': 'Email is required'}), 400
+        
+        if not is_valid_email(email):
+            return jsonify({'success': False, 'message': 'Invalid email format'}), 400
+        
+        # Check if user exists with this email
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("SELECT user_id, username FROM users WHERE email = %s", (email,))
+        user = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        
+        if not user:
+            return jsonify({'success': False, 'message': 'No account found with this email'}), 404
+        
+        # Generate 6-digit OTP
+        otp = str(random.randint(100000, 999999))
+        
+        # Store in database
+        if not store_otp_in_database(email, otp, user['user_id']):
+            return jsonify({'success': False, 'message': 'Failed to generate OTP'}), 500
+        
+        # Send email via Gmail
+        if send_otp_email_gmail(email, otp):
+            return jsonify({
+                'success': True, 
+                'message': 'Verification code sent to your email'
+            }), 200
+        else:
+            return jsonify({
+                'success': False, 
+                'message': 'Failed to send verification email. Please try again.'
+            }), 500
+        
+    except Exception as e:
+        logging.error(f"Send OTP error: {e}")
+        return jsonify({'success': False, 'message': 'Internal server error'}), 500
+
+@app.route('/api/verify-otp', methods=['POST'])
+def verify_otp():
+    """Verify OTP and login user"""
+    try:
+        data = request.get_json()
+        email = data.get('email', '').strip().lower()
+        otp = data.get('otp', '').strip()
+        
+        if not email or not otp:
+            return jsonify({'success': False, 'message': 'Email and verification code are required'}), 400
+        
+        # Verify OTP from database
+        user_data = verify_otp_from_database(email, otp)
+        
+        if not user_data:
+            return jsonify({'success': False, 'message': 'Invalid or expired verification code'}), 400
+        
+        # Generate JWT token
+        payload = {
+            'user_id': user_data['user_id'],
+            'username': user_data['username'],
+            'exp': datetime.now(timezone.utc) + timedelta(hours=24)
+        }
+        token = jwt.encode(payload, app.config['SECRET_KEY'], algorithm="HS256")
+        
+        return jsonify({
+            'success': True,
+            'message': 'Login successful!',
+            'token': token,
+            'username': user_data['username'],
+            'requires_enrollment': False
+        }), 200
+        
+    except Exception as e:
+        logging.error(f"Verify OTP error: {e}")
+        return jsonify({'success': False, 'message': 'Internal server error'}), 500
+
 # --- ALL YOUR EXISTING ROUTES REMAIN EXACTLY THE SAME ---
 
 # --- Route for REGISTRATION ---
 @app.route('/api/register', methods=['POST'])
 def register():
-    """Handle user registration for website dashboard"""
-    if not request.json or 'username' not in request.json or 'password' not in request.json:
-        return jsonify({'message': 'Missing username or password'}), 400
-
-    username = request.json['username']
-    email = request.json.get('email', '')
-    password = request.json['password']
-    
-    conn = get_db_connection()
-    if not conn:
-        return jsonify({'message': 'Database connection error'}), 503
-
-    cursor = conn.cursor()
+    """Handle user registration with comprehensive validation"""
     try:
-        # Check if user already exists
-        cursor.execute("SELECT user_id FROM users WHERE username = %s OR email = %s", 
-                      (username, email))
-        if cursor.fetchone():
-            return jsonify({'message': 'Username or email already exists'}), 400
+        if not request.json:
+            return jsonify({'message': 'No JSON data received'}), 400
 
-        # Create new user
-        password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
-        cursor.execute("""
-            INSERT INTO users (username, email, password_hash)
-            VALUES (%s, %s, %s)
-        """, (username, email, password_hash))
-        conn.commit()
+        username = request.json.get('username', '').strip()
+        email = request.json.get('email', '').strip().lower()
+        password = request.json.get('password', '')
         
-        return jsonify({'success': True, 'message': 'Registration successful'}), 201
+        # Validate required fields
+        if not username:
+            return jsonify({'message': 'Username is required'}), 400
         
+        if not email:
+            return jsonify({'message': 'Email is required'}), 400
+            
+        if not password:
+            return jsonify({'message': 'Password is required'}), 400
+        
+        # Validate email format
+        if not is_valid_email(email):
+            return jsonify({'message': 'Please enter a valid email address'}), 400
+        
+        # Validate username length and format
+        if len(username) < 3:
+            return jsonify({'message': 'Username must be at least 3 characters long'}), 400
+        
+        if len(username) > 80:
+            return jsonify({'message': 'Username cannot exceed 80 characters'}), 400
+            
+        # Validate password strength
+        if len(password) < 8:
+            return jsonify({'message': 'Password must be at least 8 characters long'}), 400
+        
+        # Check for at least one letter and one number
+        if not any(c.isalpha() for c in password) or not any(c.isdigit() for c in password):
+            return jsonify({'message': 'Password must contain both letters and numbers'}), 400
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'message': 'Database connection error'}), 503
+
+        cursor = conn.cursor()
+        try:
+            # Check if username already exists
+            cursor.execute("SELECT user_id FROM users WHERE username = %s", (username,))
+            if cursor.fetchone():
+                return jsonify({'message': 'Username already exists'}), 400
+
+            # Check if email already exists
+            cursor.execute("SELECT user_id FROM users WHERE email = %s", (email,))
+            if cursor.fetchone():
+                return jsonify({'message': 'Email already registered'}), 400
+
+            # Create new user with hashed password
+            password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
+            cursor.execute(
+                "INSERT INTO users (username, email, password_hash) VALUES (%s, %s, %s)",
+                (username, email, password_hash)
+            )
+            conn.commit()
+            
+            print(f"✅ New user registered: {username} ({email})")
+            
+            return jsonify({
+                'success': True, 
+                'message': 'Registration successful! You can now login.'
+            }), 201
+            
+        except Exception as err:
+            logging.error(f"Registration error: {err}")
+            conn.rollback()
+            return jsonify({'message': 'Registration failed due to server error'}), 500
+        finally:
+            if conn:
+                cursor.close()
+                conn.close()
+                
     except Exception as err:
-        logging.error(f"PostgreSQL Error during registration: {err}")
-        return jsonify({'message': 'Registration failed'}), 500
-    finally:
-        if conn:
-            cursor.close()
-            conn.close()
+        logging.error(f"Registration endpoint error: {err}")
+        return jsonify({'message': 'Internal server error'}), 500
 
 # --- Route for LOGIN ---
 @app.route('/api/login', methods=['POST'])
@@ -1172,4 +1539,3 @@ def report_keystroke_data():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port, debug=DEBUG)
-
