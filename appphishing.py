@@ -139,7 +139,7 @@ app.config['SECRET_KEY'] = SECRET_KEY
 CORS(app, origins=[
     "https://keyshield.my",                    # Your frontend domain
     "https://www.keyshield.my",               # Your www domain
-    "web-production-75759.up.railway.app", # Your backend domain
+    "https://web-production-75759.up.railway.app", # Your backend domain
     "chrome-extension://*",                   # Chrome extension
     "http://localhost:3000",                  # Local development
     "http://127.0.0.1:3000",                  # Local development
@@ -522,6 +522,8 @@ def send_otp():
         data = request.get_json()
         email = data.get('email', '').strip().lower()
         
+        print(f"🔍 DEBUG: Send OTP called for email: {email}")
+        
         if not email:
             return jsonify({'success': False, 'message': 'Email is required'}), 400
         
@@ -537,22 +539,28 @@ def send_otp():
         conn.close()
         
         if not user:
+            print(f"❌ DEBUG: No user found with email: {email}")
             return jsonify({'success': False, 'message': 'No account found with this email'}), 404
         
         # Generate 6-digit OTP
         otp = str(random.randint(100000, 999999))
+        print(f"✅ DEBUG: Generated OTP {otp} for user {user['username']}")
         
         # Store in database
         if not store_otp_in_database(email, otp, user['user_id']):
+            print(f"❌ DEBUG: Failed to store OTP in database")
             return jsonify({'success': False, 'message': 'Failed to generate OTP'}), 500
         
         # Send email via Gmail
+        print(f"📧 DEBUG: Attempting to send email to {email}")
         if send_otp_email_gmail(email, otp):
+            print(f"✅ DEBUG: Email sent successfully to {email}")
             return jsonify({
                 'success': True, 
                 'message': 'Verification code sent to your email'
             }), 200
         else:
+            print(f"❌ DEBUG: Email sending failed for {email}")
             return jsonify({
                 'success': False, 
                 'message': 'Failed to send verification email. Please try again.'
@@ -560,24 +568,30 @@ def send_otp():
         
     except Exception as e:
         logging.error(f"Send OTP error: {e}")
+        print(f"💥 DEBUG: Exception in send_otp: {str(e)}")
         return jsonify({'success': False, 'message': 'Internal server error'}), 500
 
 @app.route('/api/verify-otp', methods=['POST'])
 def verify_otp():
-    """Verify OTP and login user"""
+    """Verify OTP and login user - SIMPLIFIED"""
     try:
         data = request.get_json()
         email = data.get('email', '').strip().lower()
         otp = data.get('otp', '').strip()
         
+        print(f"🔐 OTP Verification attempt: {email}, OTP: {otp}")
+        
         if not email or not otp:
-            return jsonify({'success': False, 'message': 'Email and verification code are required'}), 400
+            return jsonify({'success': False, 'message': 'Email and OTP are required'}), 400
         
         # Verify OTP from database
         user_data = verify_otp_from_database(email, otp)
         
         if not user_data:
-            return jsonify({'success': False, 'message': 'Invalid or expired verification code'}), 400
+            print(f"❌ OTP verification failed for {email}")
+            return jsonify({'success': False, 'message': 'Invalid or expired OTP'}), 400
+        
+        print(f"✅ OTP verified for user: {user_data['username']}")
         
         # Generate JWT token
         payload = {
@@ -592,11 +606,11 @@ def verify_otp():
             'message': 'Login successful!',
             'token': token,
             'username': user_data['username'],
-            'requires_enrollment': False
+            'requires_enrollment': False  # OTP login doesn't need keystroke enrollment
         }), 200
         
     except Exception as e:
-        logging.error(f"Verify OTP error: {e}")
+        print(f"💥 OTP verification error: {str(e)}")
         return jsonify({'success': False, 'message': 'Internal server error'}), 500
 
 # --- ALL YOUR EXISTING ROUTES REMAIN EXACTLY THE SAME ---
@@ -1542,4 +1556,3 @@ def report_keystroke_data():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port, debug=DEBUG)
-
